@@ -16,7 +16,7 @@ from rich.text import Text
 
 import explorer.cfg as cfg
 import ui.report
-from explorer.explorer import BasicBlockExplorer
+from explorer.explorer import BasicBlockExplorer, BasicBlockScaseExplorer
 from sdks.SDKManager import SDKManager
 from explorer import explorer, hooker
 from explorer.enclave import eenter
@@ -56,6 +56,7 @@ class PandoraContext:
     report_level: LogLevel
     angr_log_level: LogLevel
     num_steps: int
+    cftrace_path: Path
     plugins: list
     pandora_options: list
     sdk_detection_type: str
@@ -114,7 +115,11 @@ def pandora_setup(pandora_ctx: PandoraContext, binary_path: Path):
         sdk_mgr = SDKManager(binary_path, pandora_ctx.sdk_detection_type, elf_file=pandora_ctx.sdk_elf_file, json_file=pandora_ctx.sdk_json_file, angr_log_level=pandora_ctx.angr_log_level)
 
         # Load binary in angr and initialize the state. Load binary with offset defined by detected SDK
-        my_explorer = BasicBlockExplorer(binary_path, action_mgr.actions['explorer'],
+        if(pandora_ctx.cftrace_path is None):
+            my_explorer = BasicBlockExplorer(binary_path, action_mgr.actions['explorer'],
+                                                  sdk_mgr.get_load_addr(), angr_backend=sdk_mgr.get_angr_backend(), angr_arch=sdk_mgr.get_angr_arch())
+        else:
+            my_explorer = BasicBlockScaseExplorer(pandora_ctx.cftrace_path, binary_path, action_mgr.actions['explorer'],
                                                   sdk_mgr.get_load_addr(), angr_backend=sdk_mgr.get_angr_backend(), angr_arch=sdk_mgr.get_angr_arch())
         init_state = my_explorer.get_init_state()
 
@@ -195,7 +200,7 @@ def pandora_explore(pandora_ctx: PandoraContext):
 
     # Get all Singleton manager objects for the local context:
     action_mgr = ActionManager()
-    my_explorer = explorer.BasicBlockExplorer()
+    my_explorer = explorer.BasicBlockExplorer() if pandora_ctx.cftrace_path is None else explorer.BasicBlockScaseExplorer()
     sdk_mgr = SDKManager()
 
     action_mgr.actions['start'](info='System loaded. Start hook before symbolic execution starts.',
@@ -568,6 +573,12 @@ def main_callback(
         num_steps: int = typer.Option(
             100, "-n", "--num-steps",
             help="Number of steps to execute in symbolic execution. 0 or negative allows to run to completion.",
+            rich_help_panel="Exploration options"
+        ),
+        cftrace_path: Path = typer.Option(
+            None, "-t", "--cftrace-file",
+            help="Path to optional control flow trace",
+            exists=True, dir_okay=False, readable=True, resolve_path=True,
             rich_help_panel="Exploration options"
         ),
         plugins: str = typer.Option(
