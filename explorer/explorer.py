@@ -243,7 +243,7 @@ class Nemesis():
         self.step_id = 0
         self.offset = offset
 
-        self.init_state = None
+        self.lst_states = []
 
 
     @staticmethod
@@ -259,13 +259,7 @@ class Nemesis():
         return 0
     
 
-    def get_nb_instructions_executed(self, statehst):
-        if statehst.state == self.init_state:
-            return statehst.state.block().instructions
-        return statehst.state.block().instructions + self.get_nb_instructions_executed(statehst.parent)
-    
-
-    def get_instruction(self, state: angr.SimState, proj: angr.Project):
+    def get_instruction(self, state: angr.SimState):
         if len(state.block().vex.statements) == 0:
             return
         
@@ -273,21 +267,28 @@ class Nemesis():
         
         instr_adrr = fst_instr.addr
         instr_size = fst_instr.len
-        instr_opcode = int(state.solver.eval(state.memory.load(instr_adrr, instr_size)))
+        try:
+            instr_opcode = state.memory.load(instr_adrr, instr_size).concrete_value
+            print(f"First instruction is at adress {hex(instr_adrr)} and of size {instr_size} and opcode {hex(instr_opcode)}")
+        except TypeError:
+            logger.warning(f"State memory can't be converted to int!\nDropping state {state}")
+            return
 
-        print(f"First instruction is at adress {hex(instr_adrr)} and of size {instr_size} and opcode {hex(instr_opcode)}")
-
+        
         lifter = msp430.lift_msp430.LifterMSP430(state.block().arch, instr_adrr)
-        #print(instr_opcode.to_bytes(3, 'little'))
-        #lifter.lift(instr_opcode.to_bytes(3, 'little'), max_inst=1)
+        lifter.lift(instr_opcode.to_bytes(instr_size, 'big'), max_inst=1, disasm=True)
+        lifter.pp_disas()
 
 
     def prune_states(self, simgr: angr.SimulationManager):
-        if not self.init_state:
-            self.init_state = simgr.active[0]
-
         for s in simgr.active:
-            print(f"Number of instructions executed before {s}")
+            self.lst_states.append(s)
+            if not s.history.parent:
+                s.globals['nb_instr'] = s.block().instructions
+            else:
+                s.globals['nb_instr'] = s.block().instructions + s.history.parent.state.globals['nb_instr']
+
+            print(f"Number of instructions executed before {s} is {s.globals['nb_instr']}")
 
             #first_instr = s.block().vex.statements[0]
             # print(f"first instr: {hex(first_instr.addr)} {first_instr.len}")   
@@ -362,7 +363,7 @@ class BasicBlockScaseExplorer(AbstractExplorer):
             self._init_simgr()
 
         if not len(self.simgr.active) == 0:
-            self.nemesis_pruner.get_instruction(self.simgr.active[0], self.proj)
+            self.nemesis_pruner.get_instruction(self.simgr.active[0])
         self.nemesis_pruner.prune_states(self.simgr)
         print(self.simgr)
 
