@@ -8,7 +8,7 @@ plugins = {
     'ptr'      : ptrsan.PointerSanitizationPlugin,
     'cf'       : cfsan.ControlFlowSanitizationPlugin,
     'dbg'      : debug.DebugPlugin,
-    'aepic'    : aepic.AepicPlugin
+    'aepic'    : aepic.AepicPlugin,
 }
 
 import logging

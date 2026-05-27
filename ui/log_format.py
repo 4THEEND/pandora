@@ -306,7 +306,8 @@ def format_asm(state, formatting=None, angr_project=None, use_ip=None, highlight
         # here by calling objdump externally
         arch = angr_project.arch.name.lower()
         logger.debug(f"Exception '{e.__class__.__name__}' when disassembling; falling back to {arch}-objdump..")
-        pretty_print_str = SymbolManager().get_objdump(ip, ip+current_block.size, arch=arch)
+        print(hex(ip), hex(ip+current_block.size))
+        pretty_print_str = SymbolManager().get_objdump(ip, ip + current_block.size, arch=arch)
     
     # print('---- BEGIN VEX ----')
     # proj.factory.block(ip).vex.pp()
