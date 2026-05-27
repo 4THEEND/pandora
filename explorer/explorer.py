@@ -1,10 +1,12 @@
 import logging
 
 import angr
-import angr_platforms.msp430 as msp430
+import angr_platforms.msp430.instrs_msp430 as msp430_instrs
+import angr_platforms.msp430.arch_msp430 as msp430_arch
+import angr_platforms.msp430.lift_msp430 as msp430_lifter
 import sys
 import csv
-import bitstring
+import pyvex.stmt as stm
 
 import pandora_options as po
 import ui.log_format as log_format
@@ -236,7 +238,7 @@ class BasicBlockExplorer(AbstractExplorer):
 
 class Nemesis():
     # Here the offset represents how much instructions we're supposed to let before running 
-    def __init__(self, trace, offset=0):
+    def __init__(self, trace, offset=3):
         self.trace_file = trace
         self.cftrace = self.parse_csv(self.trace_file)
 
@@ -255,40 +257,119 @@ class Nemesis():
 
 
     @staticmethod
-    def get_instruction_length():
-        return 0
+    def get_instruction_length(instruction_parsed, instruction_length):
+        print(instruction_parsed.data)
+        if isinstance(instruction_parsed, msp430_instrs.Type1Instruction):
+            logger.debug("Instruction is of format 2")
+
+            As = int(instruction_parsed.data['A'], 2)    
+            match As:
+                case msp430_arch.ArchMSP430.Mode.REGISTER_MODE:
+                    if isinstance(instruction_parsed, msp430_instrs.Instruction_PUSH):
+                        return 3
+                    elif isinstance(instruction_parsed, msp430_instrs.Instruction_CALL):
+                        return 4
+                    else:
+                        return 1
+                case msp430_arch.ArchMSP430.Mode.INDEXED_MODE:
+                    if isinstance(instruction_parsed, msp430_instrs.Instruction_PUSH):
+                        return 5
+                    elif isinstance(instruction_parsed, msp430_instrs.Instruction_CALL):
+                        return 5
+                    else:
+                        return 4
+                case msp430_arch.ArchMSP430.Mode.INDIRECT_REGISTER_MODE:
+                    if isinstance(instruction_parsed, msp430_instrs.Instruction_PUSH):
+                        return 4
+                    elif isinstance(instruction_parsed, msp430_instrs.Instruction_CALL):
+                        return 4
+                    else:
+                        return 3
+                case msp430_arch.ArchMSP430.Mode.INDIRECT_AUTOINCREMENT_MODE:
+                    if isinstance(instruction_parsed, msp430_instrs.Instruction_PUSH):
+                        return 4
+                    elif isinstance(instruction_parsed, msp430_instrs.Instruction_CALL):
+                        return 5
+                    else:
+                        return 3
+            return 0
+        elif isinstance(instruction_parsed, msp430_instrs.Type2Instruction):
+            logger.debug("Instruction is of format 3")
+            return 2
+        elif isinstance(instruction_parsed, msp430_instrs.Type3Instruction):
+            logger.debug("Instruction is of format 1")
+
+            As = int(instruction_parsed.data['A'], 2)
+            Ad = int(instruction_parsed.data['a'], 2)
+            d = int(instruction_parsed.data['d'], 2)
+            match As:
+                case msp430_arch.ArchMSP430.Mode.REGISTER_MODE:
+                    if Ad == msp430_arch.ArchMSP430.Mode.REGISTER_MODE:
+                        if d == msp430_arch.ArchMSP430.register_index[d] == 'pc':
+                            return 2
+                        else:
+                            return 1
+                    elif Ad == msp430_arch.ArchMSP430.Mode.INDEXED_MODE:
+                        return 4
+                case msp430_arch.ArchMSP430.Mode.INDEXED_MODE:
+                    if Ad == msp430_arch.ArchMSP430.Mode.REGISTER_MODE:
+                        return 3
+                    elif Ad == msp430_arch.ArchMSP430.Mode.INDEXED_MODE:
+                        return 6
+                case msp430_arch.ArchMSP430.Mode.INDIRECT_REGISTER_MODE:
+                    if Ad == msp430_arch.ArchMSP430.Mode.REGISTER_MODE:
+                        return 2
+                    elif Ad == msp430_arch.ArchMSP430.Mode.INDEXED_MODE:
+                        return 5
+                case msp430_arch.ArchMSP430.Mode.INDIRECT_AUTOINCREMENT_MODE:
+                    if Ad == msp430_arch.ArchMSP430.Mode.REGISTER_MODE:
+                        if instruction_length == 2:
+                            return 2
+                        elif d == msp430_arch.ArchMSP430.register_index[d] == 'pc':
+                            return 3
+                        else:
+                            return 1
+                    elif Ad == msp430_arch.ArchMSP430.Mode.INDEXED_MODE:
+                        return 5
+
+                    
+            return 0
+        return -1
     
 
-    def get_instruction(self, state: angr.SimState):
-        if len(state.block().vex.statements) == 0:
-            return
-        
-        fst_instr = state.block().vex.statements[0]
-        
-        instr_adrr = fst_instr.addr
-        instr_size = fst_instr.len
-        try:
-            instr_opcode = state.memory.load(instr_adrr, instr_size).concrete_value
-            print(f"First instruction is at adress {hex(instr_adrr)} and of size {instr_size} and opcode {hex(instr_opcode)}")
-        except TypeError:
-            logger.warning(f"State memory can't be converted to int!\nDropping state {state}")
-            return
+    def get_instructions_bb(self, state: angr.SimState):
+        for instr in state.block().vex.statements: 
+            if not isinstance(instr, stm.IMark):
+                continue
 
-        
-        lifter = msp430.lift_msp430.LifterMSP430(state.block().arch, instr_adrr)
-        lifter.lift(instr_opcode.to_bytes(instr_size, 'big'), max_inst=1, disasm=True)
-        lifter.pp_disas()
+            instr_adrr = instr.addr
+            instr_size = instr.len
+            try:
+                instr_opcode = int(state.memory.load(instr_adrr, instr_size).concrete_value)
+            except TypeError:
+                logger.warning(f"State memory can't be converted to int!\nDropping state {state}")
+                continue
+
+
+            logger.debug(f"Instruction is at adress {hex(instr_adrr)} and of size {instr_size} and opcode {hex(instr_opcode)}")
+            lifter = msp430_lifter.LifterMSP430(state.block().arch, instr_adrr)
+
+            lifter.lift(instr_opcode.to_bytes(instr_size, 'big'), max_inst=1, disasm=True)
+            lifter.pp_disas()
+            print(f"Number of cycles for this instruction: {self.get_instruction_length(lifter.decode()[0], instr_size)}")
 
 
     def prune_states(self, simgr: angr.SimulationManager):
         for s in simgr.active:
             self.lst_states.append(s)
             if not s.history.parent:
-                s.globals['nb_instr'] = s.block().instructions
+                s.globals['nb_instr'] = 0
             else:
-                s.globals['nb_instr'] = s.block().instructions + s.history.parent.state.globals['nb_instr']
+                parent_state = s.history.parent.state
+                s.globals['nb_instr'] = parent_state.block().instructions + parent_state.globals['nb_instr']
 
             print(f"Number of instructions executed before {s} is {s.globals['nb_instr']}")
+            self.get_instructions_bb(s)
 
             #first_instr = s.block().vex.statements[0]
             # print(f"first instr: {hex(first_instr.addr)} {first_instr.len}")   
@@ -362,10 +443,7 @@ class BasicBlockScaseExplorer(AbstractExplorer):
         if not self.simgr:
             self._init_simgr()
 
-        if not len(self.simgr.active) == 0:
-            self.nemesis_pruner.get_instruction(self.simgr.active[0])
         self.nemesis_pruner.prune_states(self.simgr)
-        print(self.simgr)
 
         # Perform the step action if requested by the user
         self.action(state=self.simgr.active, info='[simgr.step]')
