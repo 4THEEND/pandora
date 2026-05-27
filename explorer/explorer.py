@@ -1,9 +1,10 @@
 import logging
 
 import angr
+import angr_platforms.msp430 as msp430
 import sys
 import csv
-import random
+import bitstring
 
 import pandora_options as po
 import ui.log_format as log_format
@@ -233,27 +234,80 @@ class BasicBlockExplorer(AbstractExplorer):
         self.statistics_technique.report_stats()
 
 
-class BasicBlockScaseExplorer(AbstractExplorer):
-    def __init__(self, trace, binary_path='', action=UserAction.NONE, base_addr=0, angr_backend='elf', angr_arch='x86_64'):
+class Nemesis():
+    # Here the offset represents how much instructions we're supposed to let before running 
+    def __init__(self, trace, offset=0):
         self.trace_file = trace
-        return super(BasicBlockScaseExplorer, self).__init__(binary_path, action, base_addr, angr_backend, angr_arch)
+        self.cftrace = self.parse_csv(self.trace_file)
 
-    @staticmethod
-    def get_instruction_length():
-        return 0
+        self.step_id = 0
+        self.offset = offset
+
+        self.init_state = None
+
 
     @staticmethod
     def parse_csv(trace):
         with open(trace) as trfile:
             data = csv.reader(trfile)
             return list(map(int, list(data)[0]))
+        
+
+
+    @staticmethod
+    def get_instruction_length():
+        return 0
+    
+
+    def get_nb_instructions_executed(self, statehst):
+        if statehst.state == self.init_state:
+            return statehst.state.block().instructions
+        return statehst.state.block().instructions + self.get_nb_instructions_executed(statehst.parent)
+    
+
+    def get_instruction(self, state: angr.SimState, proj: angr.Project):
+        if len(state.block().vex.statements) == 0:
+            return
+        
+        fst_instr = state.block().vex.statements[0]
+        
+        instr_adrr = fst_instr.addr
+        instr_size = fst_instr.len
+        instr_opcode = int(state.solver.eval(state.memory.load(instr_adrr, instr_size)))
+
+        print(f"First instruction is at adress {hex(instr_adrr)} and of size {instr_size} and opcode {hex(instr_opcode)}")
+
+        lifter = msp430.lift_msp430.LifterMSP430(state.block().arch, instr_adrr)
+        #print(instr_opcode.to_bytes(3, 'little'))
+        #lifter.lift(instr_opcode.to_bytes(3, 'little'), max_inst=1)
+
+
+    def prune_states(self, simgr: angr.SimulationManager):
+        if not self.init_state:
+            self.init_state = simgr.active[0]
+
+        for s in simgr.active:
+            print(f"Number of instructions executed before {s}")
+
+            #first_instr = s.block().vex.statements[0]
+            # print(f"first instr: {hex(first_instr.addr)} {first_instr.len}")   
+
+        
+
+
+        #state_selected = simgr.active[random.randint(0, len(simgr.active) - 1)]
+        #print(f"Surviving state is {state_selected}")
+        #simgr.move(from_stash='active', to_stash='deadended', filter_func=lambda s: s != state_selected)
+
+
+
+class BasicBlockScaseExplorer(AbstractExplorer):
+    def __init__(self, trace, binary_path='', action=UserAction.NONE, base_addr=0, angr_backend='elf', angr_arch='x86_64'):
+        self.nemesis_pruner = Nemesis(trace)
+        return super(BasicBlockScaseExplorer, self).__init__(binary_path, action, base_addr, angr_backend, angr_arch)
 
 
     def _init_simgr(self):
-        self.cftrace = self.parse_csv(self.trace_file)
-        self.step_id = 0
-
-        print(self.cftrace)
 
         if not self.simgr:
             ui.log_format.dump_regs(self.initial_state, logger, logging.INFO, header_msg='Initial register state')
@@ -307,15 +361,10 @@ class BasicBlockScaseExplorer(AbstractExplorer):
         if not self.simgr:
             self._init_simgr()
 
-        
-        state_selected = self.simgr.active[random.randint(0, len(self.simgr.active) - 1)]
-        print(f"Surviving state is {state_selected}")
-        self.simgr.move(from_stash='active', to_stash='deadended', filter_func=lambda s: s != state_selected)
-
-        current = self.simgr.active[0]
-        print(current.block().bytes)
-                
-
+        if not len(self.simgr.active) == 0:
+            self.nemesis_pruner.get_instruction(self.simgr.active[0], self.proj)
+        self.nemesis_pruner.prune_states(self.simgr)
+        print(self.simgr)
 
         # Perform the step action if requested by the user
         self.action(state=self.simgr.active, info='[simgr.step]')
