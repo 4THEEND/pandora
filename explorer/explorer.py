@@ -1,12 +1,7 @@
 import logging
 
 import angr
-import angr_platforms.msp430.instrs_msp430 as msp430_instrs
-import angr_platforms.msp430.arch_msp430 as msp430_arch
-import angr_platforms.msp430.lift_msp430 as msp430_lifter
 import sys
-import csv
-import pyvex.stmt as stm
 
 import pandora_options as po
 import ui.log_format as log_format
@@ -24,6 +19,8 @@ from .techniques.ExplorationStatistics import ExplorationStatistics
 from .techniques.PandoraDFS import PandoraDFS
 from .techniques.PandoraLoopSeer import PandoraLoopSeer
 from .techniques.TraceLogger import TraceLogger
+
+from Scase import ScasePluginManager
 
 logger = logging.getLogger(__name__)
 
@@ -156,6 +153,10 @@ class AbstractExplorer(metaclass=Singleton):
         return s
 
 class BasicBlockExplorer(AbstractExplorer):
+    def __init__(self, scase_manager=None, binary_path='', action=UserAction.NONE, base_addr=0, angr_backend='elf', angr_arch='x86_64'):
+        self.scase_manager = scase_manager
+        return super().__init__(binary_path, action, base_addr, angr_backend, angr_arch)
+    
 
     def _init_simgr(self):
         if not self.simgr:
@@ -221,308 +222,10 @@ class BasicBlockExplorer(AbstractExplorer):
         # Move states where the enclave has disabled protections (sancus_disable / 0x1380)
         self.simgr.move(from_stash='active', to_stash='deadended', filter_func=lambda s: s.globals['protections_disabled'] is True)
 
-        # Do the step
-        self.simgr.step()
-
-        # Return whether we have exhausted all states and the errored list
-        states_exhausted = len(self.simgr.active) == 0
-        return states_exhausted, self.simgr.errored
-
-    def wrap_up(self):
-        """
-        BasicBlockExplorer needs to perform a final reporting at the end of stepping to allow the statistics to
-        report accurately.
-        """
-        self.statistics_technique.report_stats()
-
-
-class NemesisOpenIPE():
-    # Here the offset represents how much instructions we're supposed to let before running 
-    def __init__(self, trace, offset=4):
-        self.trace_file = trace
-        self.cftrace = self.parse_csv(self.trace_file)
-
-        self.step_id = 0
-        self.offset = offset
-
-        self.lst_states = []
-
-
-    @staticmethod
-    def parse_csv(trace):
-        with open(trace) as trfile:
-            data = csv.reader(trfile)
-            return list(map(int, list(data)[0]))
-        
-
-    # introduce a penalty if the destination is in the ROM
-    # We're supposed to be in IPE so when we write into memory it's always in the ROM
-    @staticmethod
-    def rom_penalty(instruction_parsed):
-        if isinstance(instruction_parsed, msp430_instrs.Instruction_CMP) or isinstance(instruction_parsed, msp430_instrs.Instruction_BIT):
-            return 0
-        return 1
-    
-
-    @staticmethod
-    def get_src_real_mode(src_bits, mode_bits):
-        src = msp430_arch.ArchMSP430.register_index[int(src_bits, 2)]
-        src_mode = int(mode_bits, 2)
-
-        # Symbolic and Immediate modes use the PC as the source.
-        if src == 'pc':
-            if src_mode == msp430_arch.ArchMSP430.Mode.INDEXED_MODE:
-                src_mode = msp430_arch.ArchMSP430.Mode.SYMBOLIC_MODE
-            elif src_mode == msp430_arch.ArchMSP430.Mode.INDIRECT_AUTOINCREMENT_MODE:
-                src_mode = msp430_arch.ArchMSP430.Mode.IMMEDIATE_MODE
-        # Resolve the constant generator stuff.
-        elif src == 'cg':
-            if src_mode == msp430_arch.ArchMSP430.Mode.REGISTER_MODE:
-                src_mode = msp430_arch.ArchMSP430.Mode.CONSTANT_MODE0
-            elif src_mode == msp430_arch.ArchMSP430.Mode.INDEXED_MODE:
-                src_mode = msp430_arch.ArchMSP430.Mode.CONSTANT_MODE1
-            elif src_mode == msp430_arch.ArchMSP430.Mode.INDIRECT_REGISTER_MODE:
-                src_mode = msp430_arch.ArchMSP430.Mode.CONSTANT_MODE2
-            else:
-                src_mode = msp430_arch.ArchMSP430.Mode.CONSTANT_MODE_NEG1
-        # If you use the SR as the source. things get weird.
-        elif src == 'sr':
-            if src_mode == msp430_arch.ArchMSP430.Mode.INDEXED_MODE:
-                src_mode = msp430_arch.ArchMSP430.Mode.ABSOLUTE_MODE
-            elif src_mode == msp430_arch.ArchMSP430.Mode.INDIRECT_REGISTER_MODE:
-                src_mode = msp430_arch.ArchMSP430.Mode.CONSTANT_MODE4
-            elif src_mode == msp430_arch.ArchMSP430.Mode.INDIRECT_AUTOINCREMENT_MODE:
-                src_mode = msp430_arch.ArchMSP430.Mode.CONSTANT_MODE8
-
-        return src_mode
-    
-
-    @staticmethod
-    def get_dst_real_mode(dst_bits, mode_bits):
-        dst = msp430_arch.ArchMSP430.register_index[int(dst_bits, 2)]
-        dst_mode = int(mode_bits, 2)
-
-        # Using sr as the dst enables "absolute addressing"
-        if dst == 'sr' and dst_mode == msp430_arch.ArchMSP430.Mode.INDEXED_MODE:
-            dst_mode = msp430_arch.ArchMSP430.Mode.ABSOLUTE_MODE
-
-        return dst_mode
-
-    def get_instruction_length(self, instruction_parsed, instruction_length):
-        if isinstance(instruction_parsed, msp430_instrs.Type1Instruction):
-            logger.debug("Instruction is of format 2")
-
-            if isinstance(instruction_parsed, msp430_instrs.Instruction_RETI):
-                return 5
-
-            As = self.get_src_real_mode(instruction_parsed.data['s'], instruction_parsed.data['A'])    
-            match As:
-                case msp430_arch.ArchMSP430.Mode.REGISTER_MODE | msp430_arch.ArchMSP430.Mode.CONSTANT_MODE0 | msp430_arch.ArchMSP430.Mode.CONSTANT_MODE1 | msp430_arch.ArchMSP430.Mode.CONSTANT_MODE2 | msp430_arch.ArchMSP430.Mode.CONSTANT_MODE4 | msp430_arch.ArchMSP430.Mode.CONSTANT_MODE8 | msp430_arch.ArchMSP430.Mode.CONSTANT_MODE_NEG1:
-                    if isinstance(instruction_parsed, msp430_instrs.Instruction_PUSH):
-                        return 3 + self.rom_penalty(instruction_parsed)
-                    elif isinstance(instruction_parsed, msp430_instrs.Instruction_CALL):
-                        # 4 on MSP430
-                        return 3 + self.rom_penalty(instruction_parsed)
-                    else:
-                        return 1
-
-                case msp430_arch.ArchMSP430.Mode.INDEXED_MODE | msp430_arch.ArchMSP430.Mode.SYMBOLIC_MODE | msp430_arch.ArchMSP430.Mode.ABSOLUTE_MODE:
-                    if isinstance(instruction_parsed, msp430_instrs.Instruction_PUSH):
-                        return 5 + self.rom_penalty(instruction_parsed)
-                    elif isinstance(instruction_parsed, msp430_instrs.Instruction_CALL):
-                        return 5 + self.rom_penalty(instruction_parsed)
-                    else:
-                        return 4 + self.rom_penalty(instruction_parsed)
-                case msp430_arch.ArchMSP430.Mode.INDIRECT_REGISTER_MODE:
-                    if isinstance(instruction_parsed, msp430_instrs.Instruction_PUSH):
-                        return 4 + self.rom_penalty(instruction_parsed)
-                    elif isinstance(instruction_parsed, msp430_instrs.Instruction_CALL):
-                        return 4 + self.rom_penalty(instruction_parsed)
-                    else:
-                        return 3 + self.rom_penalty(instruction_parsed)
-                case msp430_arch.ArchMSP430.Mode.INDIRECT_AUTOINCREMENT_MODE |  msp430_arch.ArchMSP430.Mode.IMMEDIATE_MODE:
-                    if isinstance(instruction_parsed, msp430_instrs.Instruction_PUSH):
-                        # 5 on MSP430
-                        return 4 + self.rom_penalty(instruction_parsed)
-                    elif isinstance(instruction_parsed, msp430_instrs.Instruction_CALL):
-                        # 5 on MSP430
-                        return 4 + self.rom_penalty(instruction_parsed)
-                    else:
-                        return 3 + self.rom_penalty(instruction_parsed)
-            return 0
-        
-        elif isinstance(instruction_parsed, msp430_instrs.Type2Instruction):
-            logger.debug("Instruction is of format 3")
-            return 2
-        
-        elif isinstance(instruction_parsed, msp430_instrs.Type3Instruction):
-            logger.debug("Instruction is of format 1")
-            
-            As = self.get_src_real_mode(instruction_parsed.data['s'], instruction_parsed.data['A'])
-            Ad = self.get_src_real_mode(instruction_parsed.data['d'], instruction_parsed.data['a'])
-            d = int(instruction_parsed.data['d'], 2)
-
-            dadd_penalty = 1 if isinstance(instruction_parsed, msp430_instrs.Instruction_DADD) else 0
-            match As:
-                case msp430_arch.ArchMSP430.Mode.REGISTER_MODE | msp430_arch.ArchMSP430.Mode.CONSTANT_MODE0 | msp430_arch.ArchMSP430.Mode.CONSTANT_MODE1 | msp430_arch.ArchMSP430.Mode.CONSTANT_MODE2 | msp430_arch.ArchMSP430.Mode.CONSTANT_MODE4 | msp430_arch.ArchMSP430.Mode.CONSTANT_MODE8 | msp430_arch.ArchMSP430.Mode.CONSTANT_MODE_NEG1:
-                    if Ad == msp430_arch.ArchMSP430.Mode.REGISTER_MODE:
-                        if msp430_arch.ArchMSP430.register_index[d] == 'pc':
-                            return 2 + dadd_penalty
-                        return 1 + dadd_penalty
-                    elif Ad == msp430_arch.ArchMSP430.Mode.INDEXED_MODE or Ad == msp430_arch.ArchMSP430.Mode.SYMBOLIC_MODE or Ad == msp430_arch.ArchMSP430.Mode.ABSOLUTE_MODE:
-                        return 4 + self.rom_penalty(instruction_parsed) + dadd_penalty
-                case msp430_arch.ArchMSP430.Mode.INDEXED_MODE | msp430_arch.ArchMSP430.Mode.SYMBOLIC_MODE | msp430_arch.ArchMSP430.Mode.ABSOLUTE_MODE:
-                    if Ad == msp430_arch.ArchMSP430.Mode.REGISTER_MODE:
-                        if msp430_arch.ArchMSP430.register_index[d] == 'pc':
-                            return 4 + dadd_penalty
-                        return 3 + dadd_penalty
-                    elif Ad == msp430_arch.ArchMSP430.Mode.INDEXED_MODE or Ad == msp430_arch.ArchMSP430.Mode.SYMBOLIC_MODE or Ad == msp430_arch.ArchMSP430.Mode.ABSOLUTE_MODE:
-                        return 6 + self.rom_penalty(instruction_parsed) + dadd_penalty
-                case msp430_arch.ArchMSP430.Mode.INDIRECT_REGISTER_MODE:
-                    if Ad == msp430_arch.ArchMSP430.Mode.REGISTER_MODE:
-                        if msp430_arch.ArchMSP430.register_index[d] == 'pc':
-                            return 3 + dadd_penalty
-                        return 2 + dadd_penalty
-                    elif Ad == msp430_arch.ArchMSP430.Mode.INDEXED_MODE or Ad == msp430_arch.ArchMSP430.Mode.SYMBOLIC_MODE or Ad == msp430_arch.ArchMSP430.Mode.ABSOLUTE_MODE:
-                        return 5 + self.rom_penalty(instruction_parsed) + dadd_penalty
-                case msp430_arch.ArchMSP430.Mode.INDIRECT_AUTOINCREMENT_MODE |  msp430_arch.ArchMSP430.Mode.IMMEDIATE_MODE:
-                    if Ad == msp430_arch.ArchMSP430.Mode.REGISTER_MODE:
-                        if instruction_length == 2:
-                            return 2 + dadd_penalty
-                        elif msp430_arch.ArchMSP430.register_index[d] == 'pc':
-                            return 3 + dadd_penalty
-                        return 1 + dadd_penalty
-                    elif Ad == msp430_arch.ArchMSP430.Mode.INDEXED_MODE or Ad == msp430_arch.ArchMSP430.Mode.SYMBOLIC_MODE or Ad == msp430_arch.ArchMSP430.Mode.ABSOLUTE_MODE:
-                        return 5 + self.rom_penalty(instruction_parsed) + dadd_penalty
-
-        return -1
-    
-
-    def should_prune_state(self, state: angr.SimState):
-        index_in_trace = state.globals['nb_instr'] - self.offset
-        for instr in state.block().vex.statements: 
-            if not isinstance(instr, stm.IMark):
-                continue
-
-            instr_adrr = instr.addr
-            instr_size = instr.len
-            try:
-                instr_opcode = int(state.memory.load(instr_adrr, instr_size).concrete_value)
-            except TypeError:
-                logger.warning(f"{state}'s memory can't be converted to int!")
-                continue
-
-
-            logger.debug(f"Instruction is at adress {hex(instr_adrr)} and of size {instr_size} and opcode {hex(instr_opcode)}")
-            lifter = msp430_lifter.LifterMSP430(state.block().arch, instr_adrr)
-
-            lifter.lift(instr_opcode.to_bytes(instr_size, 'big'), max_inst=1, disasm=True)
-
-            if 0 <= index_in_trace < len(self.cftrace):
-                instr_parsed = lifter.decode()[0]
-                instr_parsed.disassemble()
-
-                nb_true = self.get_instruction_length(instr_parsed, instr_size // 2)
-
-                logger.debug(f"Number of cycles for {lifter.disassembly}: {nb_true}")
-                logger.debug(f"Supposed number of cycles according to trace {self.cftrace[index_in_trace]}")
-                
-                if(nb_true != self.cftrace[index_in_trace]):
-                    logger.info(f"Dropping state {state}")
-                    return True
-
-            index_in_trace += 1
-        return False
-        
-
-        
-
-
-    def prune_states(self, simgr: angr.SimulationManager):
-        for s in simgr.active:
-            self.lst_states.append(s)
-            if not s.history.parent:
-                s.globals['nb_instr'] = 0
-            else:
-                parent_state = s.history.parent.state
-                s.globals['nb_instr'] = parent_state.block().instructions + parent_state.globals['nb_instr']
-
-        simgr.move(from_stash='active', to_stash='deadended', filter_func=self.should_prune_state)
-
-
-
-class BasicBlockScaseExplorer(AbstractExplorer):
-    def __init__(self, trace, binary_path='', action=UserAction.NONE, base_addr=0, angr_backend='elf', angr_arch='x86_64'):
-        self.nemesis_pruner = NemesisOpenIPE(trace)
-        return super(BasicBlockScaseExplorer, self).__init__(binary_path, action, base_addr, angr_backend, angr_arch)
-
-
-    def _init_simgr(self):
-
-        if not self.simgr:
-            ui.log_format.dump_regs(self.initial_state, logger, logging.INFO, header_msg='Initial register state')
-
-            # Create the simulation manager on first step
-            logger.info('Starting stepping. Creating simulation manager.')
-
-            # Enable Pandora options on the init state
-            pandora_options = po.PandoraOptions().get_options_dict()
-            for k,v in pandora_options.items():
-                self.initial_state.options[k] = v
-                logger.debug(f'Set Pandora option {k} to {v}')
-
-            # Now create the manager with the init state
-            self.simgr = self.proj.factory.simgr(self.initial_state)  # , save_unsat=True)`
-
-
-            """
-            Set up the exploration techniques we want to use.
-            """
-            # This would allow to spill states to disk. Current issues are:
-            # - Annotations seem to get lost
-            # - Breakpoints for plugins have to be reapplied after loading states again (inspect.b are lost)
-            # self.simgr.use_technique(Spiller(min=1, max=1, staging_max=1, vault=VaultDirShelf(d='./tmp')))
-            if pandora_options[po.PANDORA_EXPLORE_DEPTH_FIRST]:
-                self.simgr.use_technique(PandoraDFS())
-
-            if pandora_options[po.PANDORA_EXPLORE_USE_LOOP_SEER]:
-                self.simgr.use_technique(PandoraLoopSeer(bound=pandora_options[po.PANDORA_EXPLORE_LOOP_SEER_BOUND]))
-
-            # To log basic blocks when logging is set to TRACE, we use the TraceLogger
-            self.simgr.use_technique(TraceLogger())
-
-            # We keep runtime statistics in a dict that logs each symbol to a count. This is reported in system events on end.
-            self.statistics_technique = ExplorationStatistics(self.initial_state)
-            self.simgr.use_technique(self.statistics_technique)
-
-            # Enable the execution tracking to not jump to code pages that are not marked as executable
-            self.simgr.use_technique(ControlFlowTracker(self.initial_state))
-
-            # Enclave reentry has to be the last one to add
-            self.simgr.use_technique(EnclaveReentry(
-                    pandora_options[po.PANDORA_EXPLORE_REENTRY_COUNT], # Take reentry count from options
-                    self.initial_state,
-                    {self.initial_state}, # Prime the unique set with the init state
-                    user_action=ActionManager().actions['reentry'])
-            )
-
-    def make_step(self):
-        if not self.simgr:
-            self._init_simgr()
-
-        self.nemesis_pruner.prune_states(self.simgr)
-
-        # Perform the step action if requested by the user
-        self.action(state=self.simgr.active, info='[simgr.step]')
-
-        # Move eexited states to the eexited stash (do this before stepping to enable the enclave reentry technique)
-        self.simgr.move(from_stash='active', to_stash='eexited', filter_func=lambda s: s.globals['eexit'] is True)
-
-        # Move states that would result in runtime exceptions generated by the hardware to errored list
-        self.simgr.move(from_stash='active', to_stash='incorrect', filter_func=lambda s: s.globals['enclave_fault'] is True)
-
-        # Move states where the enclave has disabled protections (sancus_disable / 0x1380)
-        self.simgr.move(from_stash='active', to_stash='deadended', filter_func=lambda s: s.globals['protections_disabled'] is True)
+        if self.scase_manager:
+            for scase_plugin_name in self.scase_manager.active_plugins:
+                logger.debug(f"Going through scase plugin {scase_plugin_name} to prune")
+                self.scase_manager.active_plugins[scase_plugin_name].prune_states(self.simgr)
 
         # Do the step
         self.simgr.step()
@@ -537,4 +240,3 @@ class BasicBlockScaseExplorer(AbstractExplorer):
         report accurately.
         """
         self.statistics_technique.report_stats()
-
