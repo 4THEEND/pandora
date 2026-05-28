@@ -309,7 +309,6 @@ class NemesisOpenIPE():
         return dst_mode
 
     def get_instruction_length(self, instruction_parsed, instruction_length):
-        # TODO: see DADD (cycle++)
         if isinstance(instruction_parsed, msp430_instrs.Type1Instruction):
             logger.debug("Instruction is of format 2")
 
@@ -410,7 +409,7 @@ class NemesisOpenIPE():
             try:
                 instr_opcode = int(state.memory.load(instr_adrr, instr_size).concrete_value)
             except TypeError:
-                logger.warning(f"State memory can't be converted to int!\nDropping state {state}")
+                logger.warning(f"{state}'s memory can't be converted to int!")
                 continue
 
 
@@ -418,7 +417,6 @@ class NemesisOpenIPE():
             lifter = msp430_lifter.LifterMSP430(state.block().arch, instr_adrr)
 
             lifter.lift(instr_opcode.to_bytes(instr_size, 'big'), max_inst=1, disasm=True)
-            lifter.pp_disas()
 
             if 0 <= index_in_trace < len(self.cftrace):
                 instr_parsed = lifter.decode()[0]
@@ -426,10 +424,11 @@ class NemesisOpenIPE():
 
                 nb_true = self.get_instruction_length(instr_parsed, instr_size // 2)
 
-                logger.info(f"Number of cycles for this instruction: {nb_true}")
-                logger.info(f"Supposed number of cycles according to trace {self.cftrace[index_in_trace]}")
+                logger.debug(f"Number of cycles for {lifter.disassembly}: {nb_true}")
+                logger.debug(f"Supposed number of cycles according to trace {self.cftrace[index_in_trace]}")
                 
                 if(nb_true != self.cftrace[index_in_trace]):
+                    logger.info(f"Dropping state {state}")
                     return True
 
             index_in_trace += 1
@@ -449,7 +448,6 @@ class NemesisOpenIPE():
                 s.globals['nb_instr'] = parent_state.block().instructions + parent_state.globals['nb_instr']
 
         simgr.move(from_stash='active', to_stash='deadended', filter_func=self.should_prune_state)
-        print(len(simgr.active))
 
 
 
@@ -509,7 +507,6 @@ class BasicBlockScaseExplorer(AbstractExplorer):
             )
 
     def make_step(self):
-        print("=======================")
         if not self.simgr:
             self._init_simgr()
 
