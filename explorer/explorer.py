@@ -238,7 +238,7 @@ class BasicBlockExplorer(AbstractExplorer):
 
 class Nemesis():
     # Here the offset represents how much instructions we're supposed to let before running 
-    def __init__(self, trace, offset=3):
+    def __init__(self, trace, offset=4):
         self.trace_file = trace
         self.cftrace = self.parse_csv(self.trace_file)
 
@@ -258,20 +258,25 @@ class Nemesis():
 
     @staticmethod
     def get_instruction_length(instruction_parsed, instruction_length):
-        print(instruction_parsed.data)
+        # TODO: see DADD (cycle++)
+
         if isinstance(instruction_parsed, msp430_instrs.Type1Instruction):
             logger.debug("Instruction is of format 2")
 
-            As = int(instruction_parsed.data['A'], 2)    
+            if isinstance(instruction_parsed, msp430_instrs.Instruction_RETI):
+                return 5
+
+            As = int(instruction_parsed.data['A'])    
             match As:
-                case msp430_arch.ArchMSP430.Mode.REGISTER_MODE:
+                case msp430_arch.ArchMSP430.Mode.REGISTER_MODE | msp430_arch.ArchMSP430.Mode.CONSTANT_MODE0 | msp430_arch.ArchMSP430.Mode.CONSTANT_MODE1 | msp430_arch.ArchMSP430.Mode.CONSTANT_MODE2 | msp430_arch.ArchMSP430.Mode.CONSTANT_MODE4 | msp430_arch.ArchMSP430.Mode.CONSTANT_MODE8 | msp430_arch.ArchMSP430.Mode.CONSTANT_MODE_NEG1:
                     if isinstance(instruction_parsed, msp430_instrs.Instruction_PUSH):
                         return 3
                     elif isinstance(instruction_parsed, msp430_instrs.Instruction_CALL):
                         return 4
                     else:
                         return 1
-                case msp430_arch.ArchMSP430.Mode.INDEXED_MODE:
+
+                case msp430_arch.ArchMSP430.Mode.INDEXED_MODE | msp430_arch.ArchMSP430.Mode.SYMBOLIC_MODE | msp430_arch.ArchMSP430.Mode.ABSOLUTE_MODE:
                     if isinstance(instruction_parsed, msp430_instrs.Instruction_PUSH):
                         return 5
                     elif isinstance(instruction_parsed, msp430_instrs.Instruction_CALL):
@@ -285,7 +290,7 @@ class Nemesis():
                         return 4
                     else:
                         return 3
-                case msp430_arch.ArchMSP430.Mode.INDIRECT_AUTOINCREMENT_MODE:
+                case msp430_arch.ArchMSP430.Mode.INDIRECT_AUTOINCREMENT_MODE |  msp430_arch.ArchMSP430.Mode.IMMEDIATE_MODE:
                     if isinstance(instruction_parsed, msp430_instrs.Instruction_PUSH):
                         return 4
                     elif isinstance(instruction_parsed, msp430_instrs.Instruction_CALL):
@@ -293,35 +298,38 @@ class Nemesis():
                     else:
                         return 3
             return 0
+        
         elif isinstance(instruction_parsed, msp430_instrs.Type2Instruction):
             logger.debug("Instruction is of format 3")
             return 2
+        
         elif isinstance(instruction_parsed, msp430_instrs.Type3Instruction):
             logger.debug("Instruction is of format 1")
 
-            As = int(instruction_parsed.data['A'], 2)
-            Ad = int(instruction_parsed.data['a'], 2)
+            As = int(instruction_parsed.data['A'])
+            Ad = int(instruction_parsed.data['a'])
+            print(instruction_length, As, Ad, instruction_parsed.data)
             d = int(instruction_parsed.data['d'], 2)
             match As:
-                case msp430_arch.ArchMSP430.Mode.REGISTER_MODE:
+                case msp430_arch.ArchMSP430.Mode.REGISTER_MODE | msp430_arch.ArchMSP430.Mode.CONSTANT_MODE0 | msp430_arch.ArchMSP430.Mode.CONSTANT_MODE1 | msp430_arch.ArchMSP430.Mode.CONSTANT_MODE2 | msp430_arch.ArchMSP430.Mode.CONSTANT_MODE4 | msp430_arch.ArchMSP430.Mode.CONSTANT_MODE8 | msp430_arch.ArchMSP430.Mode.CONSTANT_MODE_NEG1:
                     if Ad == msp430_arch.ArchMSP430.Mode.REGISTER_MODE:
                         if d == msp430_arch.ArchMSP430.register_index[d] == 'pc':
                             return 2
                         else:
                             return 1
-                    elif Ad == msp430_arch.ArchMSP430.Mode.INDEXED_MODE:
+                    elif Ad == msp430_arch.ArchMSP430.Mode.INDEXED_MODE or Ad == msp430_arch.ArchMSP430.Mode.SYMBOLIC_MODE or Ad == msp430_arch.ArchMSP430.Mode.ABSOLUTE_MODE:
                         return 4
-                case msp430_arch.ArchMSP430.Mode.INDEXED_MODE:
+                case msp430_arch.ArchMSP430.Mode.INDEXED_MODE | msp430_arch.ArchMSP430.Mode.SYMBOLIC_MODE | msp430_arch.ArchMSP430.Mode.ABSOLUTE_MODE:
                     if Ad == msp430_arch.ArchMSP430.Mode.REGISTER_MODE:
                         return 3
-                    elif Ad == msp430_arch.ArchMSP430.Mode.INDEXED_MODE:
+                    elif Ad == msp430_arch.ArchMSP430.Mode.INDEXED_MODE or Ad == msp430_arch.ArchMSP430.Mode.SYMBOLIC_MODE or Ad == msp430_arch.ArchMSP430.Mode.ABSOLUTE_MODE:
                         return 6
                 case msp430_arch.ArchMSP430.Mode.INDIRECT_REGISTER_MODE:
                     if Ad == msp430_arch.ArchMSP430.Mode.REGISTER_MODE:
                         return 2
-                    elif Ad == msp430_arch.ArchMSP430.Mode.INDEXED_MODE:
+                    elif Ad == msp430_arch.ArchMSP430.Mode.INDEXED_MODE or Ad == msp430_arch.ArchMSP430.Mode.SYMBOLIC_MODE or Ad == msp430_arch.ArchMSP430.Mode.ABSOLUTE_MODE:
                         return 5
-                case msp430_arch.ArchMSP430.Mode.INDIRECT_AUTOINCREMENT_MODE:
+                case msp430_arch.ArchMSP430.Mode.INDIRECT_AUTOINCREMENT_MODE |  msp430_arch.ArchMSP430.Mode.IMMEDIATE_MODE:
                     if Ad == msp430_arch.ArchMSP430.Mode.REGISTER_MODE:
                         if instruction_length == 2:
                             return 2
@@ -329,7 +337,7 @@ class Nemesis():
                             return 3
                         else:
                             return 1
-                    elif Ad == msp430_arch.ArchMSP430.Mode.INDEXED_MODE:
+                    elif Ad == msp430_arch.ArchMSP430.Mode.INDEXED_MODE or Ad == msp430_arch.ArchMSP430.Mode.SYMBOLIC_MODE or Ad == msp430_arch.ArchMSP430.Mode.ABSOLUTE_MODE:
                         return 5
 
                     
@@ -337,7 +345,8 @@ class Nemesis():
         return -1
     
 
-    def get_instructions_bb(self, state: angr.SimState):
+    def should_prune_state(self, state: angr.SimState):
+        index_in_trace = state.globals['nb_instr'] - self.offset
         for instr in state.block().vex.statements: 
             if not isinstance(instr, stm.IMark):
                 continue
@@ -356,7 +365,21 @@ class Nemesis():
 
             lifter.lift(instr_opcode.to_bytes(instr_size, 'big'), max_inst=1, disasm=True)
             lifter.pp_disas()
-            print(f"Number of cycles for this instruction: {self.get_instruction_length(lifter.decode()[0], instr_size)}")
+
+            if 0 <= index_in_trace < len(self.cftrace):
+                nb_true = self.get_instruction_length(lifter.decode()[0], instr_size // 2)
+
+                logger.info(f"Number of cycles for this instruction: {nb_true}")
+                logger.info(f"Supposed number of cycles according to trace {self.cftrace[index_in_trace]}")
+                
+                if(nb_true != self.cftrace[index_in_trace]):
+                    return True
+
+            index_in_trace += 1
+        return False
+        
+
+        
 
 
     def prune_states(self, simgr: angr.SimulationManager):
@@ -368,18 +391,8 @@ class Nemesis():
                 parent_state = s.history.parent.state
                 s.globals['nb_instr'] = parent_state.block().instructions + parent_state.globals['nb_instr']
 
-            print(f"Number of instructions executed before {s} is {s.globals['nb_instr']}")
-            self.get_instructions_bb(s)
-
-            #first_instr = s.block().vex.statements[0]
-            # print(f"first instr: {hex(first_instr.addr)} {first_instr.len}")   
-
-        
-
-
-        #state_selected = simgr.active[random.randint(0, len(simgr.active) - 1)]
-        #print(f"Surviving state is {state_selected}")
-        #simgr.move(from_stash='active', to_stash='deadended', filter_func=lambda s: s != state_selected)
+        simgr.move(from_stash='active', to_stash='deadended', filter_func=self.should_prune_state)
+        print(len(simgr.active))
 
 
 
