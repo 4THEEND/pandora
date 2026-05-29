@@ -22,9 +22,6 @@ class NemesisOpenIPE(BaseScase):
 
         self.cftrace = self.parse_csv(self.cftrace_file)
 
-        self.step_id = 0
-        self.offset = self.cftrace.pop(0)
-
         self.lst_states = []
 
 
@@ -32,7 +29,7 @@ class NemesisOpenIPE(BaseScase):
     def get_help_text():
         return (
             "This SCASE plugin is pruning states according to a control-flow given by NEMESIS attack." \
-            "Note: The first integer of the trace should be the offset of the instruction where we should start comparing with the trace"
+            "Note: The trace should be a list of cycles (we can put -1 to ignore an instruction)"
         )
 
     @staticmethod
@@ -196,7 +193,8 @@ class NemesisOpenIPE(BaseScase):
     
 
     def should_prune_state(self, state: angr.SimState):
-        index_in_trace = state.globals['nb_instr'] - self.offset
+        index_in_trace = state.globals['nb_instr']
+
         for instr in state.block().vex.statements: 
             if not isinstance(instr, stm.IMark):
                 continue
@@ -215,7 +213,7 @@ class NemesisOpenIPE(BaseScase):
 
             lifter.lift(instr_opcode.to_bytes(instr_size, 'big'), max_inst=1, disasm=True)
 
-            if 0 <= index_in_trace < len(self.cftrace):
+            if index_in_trace < len(self.cftrace) and self.cftrace[index_in_trace] != -1:
                 instr_parsed = lifter.decode()[0]
                 instr_parsed.disassemble()
 
