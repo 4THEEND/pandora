@@ -2,7 +2,7 @@ import logging
 
 import angr
 import sys
-from aenum import extend_enum
+import enum
 from typing import Any
 import angr.state_plugins.inspect as angr_inspect
 import dataclasses
@@ -40,8 +40,9 @@ class AbstractExplorer(metaclass=Singleton):
         SimState.register_default('sym_memory', EnclaveAwareMemory)
 
         # Second, register Pandora event_types and Pandora inspect_attributes with angrs inspect module
-        for event in PANDORA_EVENT_TYPES:
-            extend_enum(angr_inspect.EventType, event.upper(), event)
+        _existing = {m.name: m.value for m in angr_inspect.EventType}
+        _extra = {e.upper(): e for e in PANDORA_EVENT_TYPES}
+        angr_inspect.EventType = enum.StrEnum("EventType", {**_existing, **_extra})
 
         PandoraInspectAttrs = dataclasses.make_dataclass(
             "PandoraInspectAttrs",
