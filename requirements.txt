@@ -1,3 +1,4 @@
+aenum==3.1.17
 ailment==9.2.158
 angr==9.2.217
 angr_platforms @ git+https://github.com/angr/angr-platforms.git@ee1b6d9d20f11b250580fa0d867d51957b8f4e53

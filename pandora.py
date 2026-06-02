@@ -617,7 +617,7 @@ def main_callback(
             rich_help_panel="Exploration options"
         ),
         pandora_options: Optional[List[str]] = typer.Option(
-            None, "--pandora-option", callback=plugin_options_callback,
+            [], "--pandora-option", callback=plugin_options_callback,
             help="Sets a specific advanced option via the format [bold]option=value[/]. Default values shown below. "
                  + format_help_options('option', po.PandoraOptions().get_options_dict() ),
             rich_help_panel="Exploration options"
@@ -642,7 +642,7 @@ def main_callback(
             exists=True, dir_okay=False, readable=True, resolve_path=True,
         ),
         actions: Optional[List[str]] = typer.Option(
-            None, "-a", "--action", callback=action_callback,
+            [], "-a", "--action", callback=action_callback,
             help="Adds an action bound to a specific event via the format [bold]event=action[/]. "
                  + format_help_options('event',
                                        {**ActionManager.get_system_events(),
