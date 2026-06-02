@@ -589,13 +589,13 @@ def main_callback(
             rich_help_panel="Exploration options"
         ),
         cftrace_paths: List[Path] = typer.Option(
-            None, "-t", "--cftrace-files",
+            [], "-t", "--cftrace-files",
             help="Paths to optional control flow trace",
             exists=True, dir_okay=False, readable=True, resolve_path=True,
             rich_help_panel="Exploration options"
         ),
         dftrace_paths: List[Path] = typer.Option(
-            None, "-T", "--dftrace-files",
+            [], "-T", "--dftrace-files",
             help="Path to optional data flow trace",
             exists=True, dir_okay=False, readable=True, resolve_path=True,
             rich_help_panel="Exploration options"
