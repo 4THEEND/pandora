@@ -165,6 +165,8 @@ class NemesisOpenIPE(BaseScase):
                         return 1 + dadd_penalty
                     elif Ad == msp430_arch.ArchMSP430.Mode.INDEXED_MODE or Ad == msp430_arch.ArchMSP430.Mode.SYMBOLIC_MODE or Ad == msp430_arch.ArchMSP430.Mode.ABSOLUTE_MODE:
                         return 4 + self.rom_penalty(instruction_parsed) + dadd_penalty
+                    elif Ad == msp430_arch.ArchMSP430.Mode.CONSTANT_MODE0 or Ad == msp430_arch.ArchMSP430.Mode.CONSTANT_MODE1 or Ad == msp430_arch.ArchMSP430.Mode.CONSTANT_MODE2 or Ad == msp430_arch.ArchMSP430.Mode.CONSTANT_MODE4 or Ad == msp430_arch.ArchMSP430.Mode.CONSTANT_MODE8 or Ad == msp430_arch.ArchMSP430.Mode.CONSTANT_MODE_NEG1:
+                        return 1
                 case msp430_arch.ArchMSP430.Mode.INDEXED_MODE | msp430_arch.ArchMSP430.Mode.SYMBOLIC_MODE | msp430_arch.ArchMSP430.Mode.ABSOLUTE_MODE:
                     if Ad == msp430_arch.ArchMSP430.Mode.REGISTER_MODE:
                         if msp430_arch.ArchMSP430.register_index[d] == 'pc':
