@@ -175,9 +175,12 @@ class ScriptManager:
                 conc['hook_addr']
             )  
         elif 'symbol' in conc and conc['symbol']:    
+            if 'name' not in conc:
+                conc['name'] = conc['symbol_name']
+                
             complete_func = partial(
                 self.construct_to_concretize_memory, 
-                conc['symbol_name'],
+                conc['name'],
                 conc['register'], 
                 SymbolManager().symbol_to_addr(conc['symbol_name']), 
                 conc['size'],
@@ -255,7 +258,6 @@ class ScriptManager:
                     logger.warning("Couldn't create the variable to concretize")
             else:
                 mem_address = claripy.BVV(offset, size)
-                print(mem_address)
                 state.globals['to_concretize'] = state.globals['to_concretize'].copy()
                 state.globals['to_concretize'][name] = (mem_address, int(size / 8)), 1
 
