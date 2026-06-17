@@ -92,10 +92,12 @@ class ScriptVisitor(NodeVisitor):
 class ScriptManager:
     def __init__(self, list_script_files: list[Path], arch: Arch, init_state: SimState) -> None:
         init_state.globals['to_concretize'] = {}
+        self.mem_endness = arch.memory_endness
+
         registers = arch.register_names.values()
         self.grammar = Grammar(
             fr"""
-                script          = (concr sl)+
+                script          = (concr sl*)+
 
                 concr           = concretize expr alias? of size when event
 
@@ -142,7 +144,6 @@ class ScriptManager:
         for script in list_script_files:
             output = self.parse_script_file(script)
             for script_entry in output:
-                print(script_entry)
                 self.apply_script_concretizer(script_entry, init_state)
         init_state.inspect.b('eexit', when=angr.BP_BEFORE, action=self.callback_eexit)
             
@@ -203,7 +204,7 @@ class ScriptManager:
                 True,
                 False
             )
-            init_state.inspect.b('eenter', when=angr.BP_BEFORE, action=wrapper)
+            init_state.inspect.b('eenter', when=angr.BP_AFTER, action=wrapper)
         elif 'eexit' in conc and conc['eexit']:
             wrapper = partial(
                 self.callback_wrapper,
@@ -227,7 +228,6 @@ class ScriptManager:
         dic = {}
         for elem, bv in state.globals['to_concretize'].items():
             dic[elem] = bv
-        print(dic)
 
             
     def construct_to_concretize_memory(self, name, register, offset, size, action_n, hook_addr, eenter, eexit, state: SimState):
@@ -255,6 +255,7 @@ class ScriptManager:
                     logger.warning("Couldn't create the variable to concretize")
             else:
                 mem_address = claripy.BVV(offset, size)
+                print(mem_address)
                 state.globals['to_concretize'] = state.globals['to_concretize'].copy()
                 state.globals['to_concretize'][name] = (mem_address, int(size / 8)), 1
 
@@ -290,7 +291,7 @@ class ScriptManager:
             if type == 0:
                 real_value = data_format
             elif type == 1: 
-                real_value = state.solver.eval(state.memory.load(data_format[0], data_format[1], disable_actions=True, inspect=False))
+                real_value = state.solver.eval(state.memory.load(data_format[0], data_format[1], endness=self.mem_endness, disable_actions=True, inspect=False))
             elif type == 2:
                 real_value = state.solver.eval(data_format)
             logger.info(f"Concretizing {name} into {hex(real_value)}")
