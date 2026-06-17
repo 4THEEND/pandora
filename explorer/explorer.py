@@ -229,7 +229,7 @@ class BasicBlockExplorer(AbstractExplorer):
         self.simgr.move(from_stash='active', to_stash='deadended', filter_func=lambda s: s.globals['protections_disabled'] is True)
 
         # Do the step
-        self.simgr.step()
+        self.simgr.step(num_inst=1)
 
         # Return whether we have exhausted all states and the errored list
         states_exhausted = len(self.simgr.active) == 0

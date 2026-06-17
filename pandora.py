@@ -39,6 +39,8 @@ from ui import console
 
 import pandora_options as po
 
+from scripts.ScriptManager import ScriptManager
+
 logger = logging.getLogger(__file__)
 
 pandora_state = {
@@ -52,6 +54,7 @@ class PandoraContext:
     ctx: typer.Context
     file_path: Path
     config_file: Path
+    script_files: List[Path]
     log_level: LogLevel
     report_level: LogLevel
     angr_log_level: LogLevel
@@ -122,6 +125,9 @@ def pandora_setup(pandora_ctx: PandoraContext, binary_path: Path):
         sdk_mgr.initialize_sdk(init_state)
 
         console_progress.update(task_sdks, total=1.0, completed=1.0)
+
+        if pandora_ctx.script_files:
+            sm = ScriptManager(pandora_ctx.script_files, my_explorer.proj.arch, init_state)
 
         """
         Angr setup
@@ -550,6 +556,11 @@ def main_callback(
         config_file: Path = typer.Option(
             None, "-c", "--config-file",
             help="Path to optional config file",
+            exists=True, dir_okay=False, readable=True, resolve_path=True,
+        ),
+        script_files: List[Path] = typer.Option(
+            None, "-S", "--script-file",
+            help="Path to optional script files",
             exists=True, dir_okay=False, readable=True, resolve_path=True,
         ),
         log_level: LogLevel = typer.Option(
