@@ -24,6 +24,16 @@ class ScriptVisitor(NodeVisitor):
             output.append(child)
         return output
     
+    def visit_concr(self, node: Node, visited_children: Sequence[Any]):
+        output = self.generic_visit(node, visited_children)
+        output['concretize'] = True
+        return output
+    
+    def visit_set_ac(self, node: Node, visited_children: Sequence[Any]):
+        output = self.generic_visit(node, visited_children)
+        output['set'] = True
+        return output
+    
     def visit_expr(self, node: Node, visited_children: Sequence[Any]):
         output = self.generic_visit(node, visited_children)
         if 'register' not in output:
@@ -39,6 +49,18 @@ class ScriptVisitor(NodeVisitor):
         output = self.generic_visit(node, visited_children)
         output['symbol_name'] = output.pop('name')
         output['symbol'] = True
+        return output
+    
+    def visit_val(self, node: Node, visited_children: Sequence[Any]):
+        output = self.generic_visit(node, visited_children)
+        if 'size' in output:
+            output['bv_value'] = output.pop('size')
+        return output
+    
+    def visit_symbolic(self, node: Node, visited_children: Sequence[Any]):
+        output = self.generic_visit(node, visited_children)
+        output['symbolic_name'] = output.pop('name')
+        output['symbolic'] = True
         return output
     
     def visit_register(self, node: Node, visited_children: Sequence[Any]):
@@ -97,9 +119,14 @@ class ScriptManager:
         registers = arch.register_names.values()
         self.grammar = Grammar(
             fr"""
-                script          = (concr sl*)+
+                script          = (action sl*)+
+
+                action          = concr 
+                                / set_ac
+
 
                 concr           = concretize expr alias? of size when event
+                set_ac          = set expr to val of size when event 
 
                 expr            = register 
                                 / memory
@@ -107,6 +134,11 @@ class ScriptManager:
                 
                 memory          = "memory(" space register_offset space rpar
                 symbol          = "symbol(" space name space rpar
+
+                val             = symbolic
+                                / size
+
+                symbolic        = "symbolic(" space name space rpar
 
                 alias           = " alias " name
 
@@ -133,6 +165,8 @@ class ScriptManager:
                 name            = ~r"\w+"
 
 
+                set             = "set "
+                to              = " to "
                 concretize      = "concretize "
                 of              = " of size "
                 when            = " when "
@@ -144,6 +178,7 @@ class ScriptManager:
         for script in list_script_files:
             output = self.parse_script_file(script)
             for script_entry in output:
+                print(script_entry)
                 self.apply_script_concretizer(script_entry, init_state)
         init_state.inspect.b('eexit', when=angr.BP_BEFORE, action=self.callback_eexit)
             
@@ -159,44 +194,91 @@ class ScriptManager:
         
 
     def apply_script_concretizer(self, conc: dict, init_state: SimState):
-        if 'memory' in conc and conc['memory']:
-            if 'name' not in conc:
-                if conc['register'] is not None:
-                    conc['name'] = f"{conc['register']}_{hex(conc['offset'])}_{conc['size']}_{conc['action_n']}_{hex(conc['hook_addr'])}"
-                else:
-                    conc['name'] = f"{hex(conc['offset'])}_{conc['size']}_{conc['action_n']}_{hex(conc['hook_addr'])}"
-            complete_func = partial(
-                self.construct_to_concretize_memory, 
-                conc['name'],
-                conc['register'], 
-                conc['offset'], 
-                conc['size'],
-                conc['action_n'],
-                conc['hook_addr']
-            )  
-        elif 'symbol' in conc and conc['symbol']:    
-            if 'name' not in conc:
-                conc['name'] = conc['symbol_name']
+        if 'concretize' in conc and conc['concretize']:
+            if 'memory' in conc and conc['memory']:
+                if 'name' not in conc:
+                    if conc['register'] is not None:
+                        conc['name'] = f"{conc['register']}_{hex(conc['offset'])}_{conc['size']}_{conc['action_n']}_{hex(conc['hook_addr'])}_conc"
+                    else:
+                        conc['name'] = f"{hex(conc['offset'])}_{conc['size']}_{conc['action_n']}_{hex(conc['hook_addr'])}_conc"
+                complete_func = partial(
+                    self.construct_to_concretize_memory, 
+                    conc['name'],
+                    conc['register'], 
+                    conc['offset'], 
+                    conc['size'],
+                    conc['action_n'],
+                    conc['hook_addr']
+                )  
+            elif 'symbol' in conc and conc['symbol']:    
+                if 'name' not in conc:
+                    conc['name'] = f'{conc['symbol_name']}_conc'
                 
-            complete_func = partial(
-                self.construct_to_concretize_memory, 
-                conc['name'],
-                conc['register'], 
-                SymbolManager().symbol_to_addr(conc['symbol_name']), 
-                conc['size'],
-                conc['action_n'],
-                conc['hook_addr']
-            )     
-        else:
-            if 'name' not in conc:
-                conc['name'] = f"{conc['register']}_{conc['action_n']}_{hex(conc['hook_addr'])}"
-            complete_func = partial(
-                self.construct_to_concretize_reg,
-                conc['name'], 
-                conc['register'], 
-                conc['action_n'],
-                conc['hook_addr']
-            )
+                complete_func = partial(
+                    self.construct_to_concretize_memory, 
+                    conc['name'],
+                    conc['register'], 
+                    SymbolManager().symbol_to_addr(conc['symbol_name']), 
+                    conc['size'],
+                    conc['action_n'],
+                    conc['hook_addr']
+                )     
+            else:
+                if 'name' not in conc:
+                    conc['name'] = f"{conc['register']}_{conc['action_n']}_{hex(conc['hook_addr'])}_conc"
+                complete_func = partial(
+                    self.construct_to_concretize_reg,
+                    conc['name'], 
+                    conc['register'], 
+                    conc['action_n'],
+                    conc['hook_addr']
+                )
+        elif 'set' in conc and conc['set']:
+            if 'symbolic' in conc and conc['symbolic']:
+                    bv = claripy.BVS(conc['symbolic_name'], conc['size'])
+            else:
+                bv = claripy.BVV(conc['bv_value'], conc['size'])
+
+            if 'memory' in conc and conc['memory']:
+                if 'name' not in conc:
+                    if conc['register'] is not None:
+                        conc['name'] = f"{conc['register']}_{hex(conc['offset'])}_{conc['size']}_{conc['action_n']}_{hex(conc['hook_addr'])}_set"
+                    else:
+                        conc['name'] = f"{hex(conc['offset'])}_{conc['size']}_{conc['action_n']}_{hex(conc['hook_addr'])}_set"
+                complete_func = partial(
+                    self.construct_to_set_memory, 
+                    conc['name'],
+                    conc['register'], 
+                    conc['offset'], 
+                    conc['size'],
+                    conc['action_n'],
+                    conc['hook_addr'],
+                    bv
+                )  
+            elif 'symbol' in conc and conc['symbol']:    
+                if 'name' not in conc:
+                    conc['name'] = f'{conc['symbol_name']}_set'
+                
+                complete_func = partial(
+                    self.construct_to_set_memory, 
+                    conc['name'],
+                    conc['register'], 
+                    SymbolManager().symbol_to_addr(conc['symbol_name']), 
+                    conc['size'],
+                    conc['action_n'],
+                    conc['hook_addr'],
+                    bv
+                )     
+            else:
+                conc['name'] = f"{conc['register']}_{conc['action_n']}_{hex(conc['hook_addr'])}_set"
+                complete_func = partial(
+                    self.construct_to_set_reg,
+                    conc['name'], 
+                    conc['register'], 
+                    conc['action_n'],
+                    conc['hook_addr'],
+                    bv
+                )
 
 
 
@@ -225,13 +307,6 @@ class ScriptManager:
             )
             init_state.inspect.b('engine_process', when=angr.BP_BEFORE, action=wrapper)
 
-
-    @staticmethod
-    def copy_global(state):
-        dic = {}
-        for elem, bv in state.globals['to_concretize'].items():
-            dic[elem] = bv
-
             
     def construct_to_concretize_memory(self, name, register, offset, size, action_n, hook_addr, eenter, eexit, state: SimState):
         if state.addr == hook_addr or eenter or eexit:
@@ -245,17 +320,16 @@ class ScriptManager:
                 return
             
             logger.info(f"Going to conretize {name} {state}")
-            to_concretize_var = claripy.BVS(name, size)
 
             if register is not None:
                 if state.regs.get(register).length:
-                    mem_address = state.regs.get(register) + claripy.BVV(offset, state.regs.get(register).length)
-                    state.memory.store(mem_address, to_concretize_var, disable_actions=True, inspect=False)
+                    mem_address = state.regs.get(register) + claripy.BVV(offset, state.regs.get(register).length)      
 
                     state.globals['to_concretize'] = state.globals['to_concretize'].copy()
                     state.globals['to_concretize'][name] = (mem_address, size), 1
                 else:
                     logger.warning("Couldn't create the variable to concretize")
+                    return 
             else:
                 mem_address = claripy.BVV(offset, size)
                 state.globals['to_concretize'] = state.globals['to_concretize'].copy()
@@ -281,6 +355,48 @@ class ScriptManager:
             else:
                # Pay attention to conflicts with Pandora's plugins renaming of registers
                state.globals['to_concretize'][name] = state.regs.get(register).concrete_value, 2
+
+    
+    def construct_to_set_memory(self, name, register, offset, size, action_n, hook_addr, bv, eenter, eexit, state: SimState):
+        if state.addr == hook_addr or eenter or eexit:
+            action_name = f"action_n_{name}"
+            if not action_name in state.globals:
+                state.globals[action_name] = 1
+            else:
+                state.globals[action_name] += 1
+
+            if state.globals[action_name] != action_n:
+                return
+            
+            logger.info(f"Going to set {name} {state}")
+
+            if register is not None:
+                if state.regs.get(register).length:
+                    mem_address = state.regs.get(register) + claripy.BVV(offset, state.regs.get(register).length)
+                else:
+                    logger.warning("Couldn't create the variable to concretize")
+                    return 
+            else:
+                mem_address = claripy.BVV(offset, size)
+
+            state.memory.store(mem_address, bv, endness=self.mem_endness, disable_actions=True, inspect=False)
+    
+
+    def construct_to_set_reg(self, name, register, action_n, hook_addr, bv, eenter, eexit, state: SimState):
+        if state.addr == hook_addr or eenter or eexit:
+            action_name = f"action_n_{name}"
+            if not action_name in state.globals:
+                state.globals[action_name] = 1
+            else:
+                state.globals[action_name] += 1
+
+            if state.globals[action_name] != action_n:
+                return
+
+            logger.info(f"Going to set {name} {state}")
+
+            # TODO: keep annotations
+            state.regs.__setattr__(register, bv)
         
 
     def callback_wrapper(self, func, eenter, eexit, state: SimState):
