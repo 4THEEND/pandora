@@ -88,7 +88,7 @@ def eexit_hook(state: angr.sim_state.SimState):
     Debug report every state that eexits. Make them unique by giving each an individual ID on the info
     """
     global eexit_count, debug_shortname
-    Reporter().report(
+    '''Reporter().report(
         f'State {eexit_count} eexited',
         state,
         logger,
@@ -96,7 +96,7 @@ def eexit_hook(state: angr.sim_state.SimState):
         logging.INFO,
         #extra_info={'symbol table': SymbolManager().symbol_table},
         extra_sections=extra_sec
-    )
+    )'''
 
     eexit_count += 1
 

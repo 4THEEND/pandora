@@ -2,8 +2,10 @@ import logging
 
 import angr
 import sys
-import csv
-import random
+import enum
+from typing import Any
+import angr.state_plugins.inspect as angr_inspect
+import dataclasses
 
 import pandora_options as po
 import ui.log_format as log_format
@@ -22,6 +24,8 @@ from .techniques.PandoraDFS import PandoraDFS
 from .techniques.PandoraLoopSeer import PandoraLoopSeer
 from .techniques.TraceLogger import TraceLogger
 
+from Scase import ScasePluginManager
+
 logger = logging.getLogger(__name__)
 
 class AbstractExplorer(metaclass=Singleton):
@@ -38,9 +42,17 @@ class AbstractExplorer(metaclass=Singleton):
         SimState.register_default('sym_memory', EnclaveAwareMemory)
 
         # Second, register Pandora event_types and Pandora inspect_attributes with angrs inspect module
-        angr.state_plugins.inspect.event_types = angr.state_plugins.inspect.event_types.union(PANDORA_EVENT_TYPES)
-        angr.state_plugins.inspect.inspect_attributes = angr.state_plugins.inspect.inspect_attributes.union(
-            PANDORA_INSPECT_ATTRIBUTES)
+        _existing = {m.name: m.value for m in angr_inspect.EventType}
+        _extra = {e.upper(): e for e in PANDORA_EVENT_TYPES}
+        angr_inspect.EventType = enum.StrEnum("EventType", {**_existing, **_extra})
+
+        PandoraInspectAttrs = dataclasses.make_dataclass(
+            "PandoraInspectAttrs",
+            [(name, Any, dataclasses.field(default=None)) for name in PANDORA_INSPECT_ATTRIBUTES],
+            bases=(angr_inspect.InspectAttrs,),
+        )
+        angr_inspect.InspectAttrs = PandoraInspectAttrs
+        angr_inspect.inspect_attributes = frozenset(f.name for f in dataclasses.fields(PandoraInspectAttrs))
 
         # Last, create angr project and initial state
         angr_main_opts = {'backend': angr_backend, 'arch': angr_arch}
@@ -153,6 +165,10 @@ class AbstractExplorer(metaclass=Singleton):
         return s
 
 class BasicBlockExplorer(AbstractExplorer):
+    def __init__(self, scase_manager=None, binary_path='', action=UserAction.NONE, base_addr=0, angr_backend='elf', angr_arch='x86_64'):
+        self.scase_manager = scase_manager
+        return super().__init__(binary_path, action, base_addr, angr_backend, angr_arch)
+    
 
     def _init_simgr(self):
         if not self.simgr:
@@ -202,7 +218,7 @@ class BasicBlockExplorer(AbstractExplorer):
                     user_action=ActionManager().actions['reentry'])
             )
 
-    def make_step(self):
+    def make_step(self, step_size=1):
         if not self.simgr:
             self._init_simgr()
 
@@ -218,8 +234,16 @@ class BasicBlockExplorer(AbstractExplorer):
         # Move states where the enclave has disabled protections (sancus_disable / 0x1380)
         self.simgr.move(from_stash='active', to_stash='deadended', filter_func=lambda s: s.globals['protections_disabled'] is True)
 
+        if self.scase_manager:
+            for scase_plugin_name in self.scase_manager.active_plugins:
+                logger.debug(f"Going through scase plugin {scase_plugin_name} to prune")
+                self.scase_manager.active_plugins[scase_plugin_name].prune_states(step_size, self.simgr)
+
         # Do the step
-        self.simgr.step()
+        if not step_size:
+            self.simgr.step()
+        else:
+            self.simgr.step(num_inst=step_size)
 
         # Return whether we have exhausted all states and the errored list
         states_exhausted = len(self.simgr.active) == 0
@@ -231,115 +255,3 @@ class BasicBlockExplorer(AbstractExplorer):
         report accurately.
         """
         self.statistics_technique.report_stats()
-
-
-class BasicBlockScaseExplorer(AbstractExplorer):
-    def __init__(self, trace, binary_path='', action=UserAction.NONE, base_addr=0, angr_backend='elf', angr_arch='x86_64'):
-        self.trace_file = trace
-        return super(BasicBlockScaseExplorer, self).__init__(binary_path, action, base_addr, angr_backend, angr_arch)
-
-    @staticmethod
-    def get_instruction_length():
-        return 0
-
-    @staticmethod
-    def parse_csv(trace):
-        with open(trace) as trfile:
-            data = csv.reader(trfile)
-            return list(map(int, list(data)[0]))
-
-
-    def _init_simgr(self):
-        self.cftrace = self.parse_csv(self.trace_file)
-        self.step_id = 0
-
-        print(self.cftrace)
-
-        if not self.simgr:
-            ui.log_format.dump_regs(self.initial_state, logger, logging.INFO, header_msg='Initial register state')
-
-            # Create the simulation manager on first step
-            logger.info('Starting stepping. Creating simulation manager.')
-
-            # Enable Pandora options on the init state
-            pandora_options = po.PandoraOptions().get_options_dict()
-            for k,v in pandora_options.items():
-                self.initial_state.options[k] = v
-                logger.debug(f'Set Pandora option {k} to {v}')
-
-            # Now create the manager with the init state
-            self.simgr = self.proj.factory.simgr(self.initial_state)  # , save_unsat=True)`
-
-
-            """
-            Set up the exploration techniques we want to use.
-            """
-            # This would allow to spill states to disk. Current issues are:
-            # - Annotations seem to get lost
-            # - Breakpoints for plugins have to be reapplied after loading states again (inspect.b are lost)
-            # self.simgr.use_technique(Spiller(min=1, max=1, staging_max=1, vault=VaultDirShelf(d='./tmp')))
-            if pandora_options[po.PANDORA_EXPLORE_DEPTH_FIRST]:
-                self.simgr.use_technique(PandoraDFS())
-
-            if pandora_options[po.PANDORA_EXPLORE_USE_LOOP_SEER]:
-                self.simgr.use_technique(PandoraLoopSeer(bound=pandora_options[po.PANDORA_EXPLORE_LOOP_SEER_BOUND]))
-
-            # To log basic blocks when logging is set to TRACE, we use the TraceLogger
-            self.simgr.use_technique(TraceLogger())
-
-            # We keep runtime statistics in a dict that logs each symbol to a count. This is reported in system events on end.
-            self.statistics_technique = ExplorationStatistics(self.initial_state)
-            self.simgr.use_technique(self.statistics_technique)
-
-            # Enable the execution tracking to not jump to code pages that are not marked as executable
-            self.simgr.use_technique(ControlFlowTracker(self.initial_state))
-
-            # Enclave reentry has to be the last one to add
-            self.simgr.use_technique(EnclaveReentry(
-                    pandora_options[po.PANDORA_EXPLORE_REENTRY_COUNT], # Take reentry count from options
-                    self.initial_state,
-                    {self.initial_state}, # Prime the unique set with the init state
-                    user_action=ActionManager().actions['reentry'])
-            )
-
-    def make_step(self):
-        print("=======================")
-        if not self.simgr:
-            self._init_simgr()
-
-        
-        state_selected = self.simgr.active[random.randint(0, len(self.simgr.active) - 1)]
-        print(f"Surviving state is {state_selected}")
-        self.simgr.move(from_stash='active', to_stash='deadended', filter_func=lambda s: s != state_selected)
-
-        current = self.simgr.active[0]
-        print(current.block().bytes)
-                
-
-
-        # Perform the step action if requested by the user
-        self.action(state=self.simgr.active, info='[simgr.step]')
-
-        # Move eexited states to the eexited stash (do this before stepping to enable the enclave reentry technique)
-        self.simgr.move(from_stash='active', to_stash='eexited', filter_func=lambda s: s.globals['eexit'] is True)
-
-        # Move states that would result in runtime exceptions generated by the hardware to errored list
-        self.simgr.move(from_stash='active', to_stash='incorrect', filter_func=lambda s: s.globals['enclave_fault'] is True)
-
-        # Move states where the enclave has disabled protections (sancus_disable / 0x1380)
-        self.simgr.move(from_stash='active', to_stash='deadended', filter_func=lambda s: s.globals['protections_disabled'] is True)
-
-        # Do the step
-        self.simgr.step()
-
-        # Return whether we have exhausted all states and the errored list
-        states_exhausted = len(self.simgr.active) == 0
-        return states_exhausted, self.simgr.errored
-
-    def wrap_up(self):
-        """
-        BasicBlockExplorer needs to perform a final reporting at the end of stepping to allow the statistics to
-        report accurately.
-        """
-        self.statistics_technique.report_stats()
-

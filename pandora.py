@@ -16,11 +16,12 @@ from rich.text import Text
 
 import explorer.cfg as cfg
 import ui.report
-from explorer.explorer import BasicBlockExplorer, BasicBlockScaseExplorer
+from explorer.explorer import BasicBlockExplorer
 from sdks.SDKManager import SDKManager
 from explorer import explorer, hooker
 from explorer.enclave import eenter
 from pithos.PluginManager import PluginManager
+from Scase.ScasePluginManager import ScasePluginManager
 from tests.enclave import test_buffer_entirely_inside_enclave, test_buffer_touches_enclave
 from tests.memory import test_default_memory
 from ui import log_setup, log_format
@@ -39,6 +40,8 @@ from ui import console
 
 import pandora_options as po
 
+from scripts.ScriptManager import ScriptManager
+
 logger = logging.getLogger(__file__)
 
 pandora_state = {
@@ -52,12 +55,15 @@ class PandoraContext:
     ctx: typer.Context
     file_path: Path
     config_file: Path
+    script_files: List[Path]
     log_level: LogLevel
     report_level: LogLevel
     angr_log_level: LogLevel
     num_steps: int
-    cftrace_path: Path
+    cftrace_paths: List[Path]
+    dftrace_paths: List[Path]
     plugins: list
+    scase_plugins: list
     pandora_options: list
     sdk_detection_type: str
     actions: List[str]
@@ -114,19 +120,24 @@ def pandora_setup(pandora_ctx: PandoraContext, binary_path: Path):
         # Init binary manager to detect sdk
         sdk_mgr = SDKManager(binary_path, pandora_ctx.sdk_detection_type, elf_file=pandora_ctx.sdk_elf_file, json_file=pandora_ctx.sdk_json_file, angr_log_level=pandora_ctx.angr_log_level)
 
+        #Init requested SCASE plugins
+        scase_plugin_mgr = ScasePluginManager(pandora_ctx.scase_plugins, pandora_ctx.cftrace_paths, pandora_ctx.dftrace_paths)
+        if pandora_ctx.scase_plugins is not []:
+            pandora_ctx.plugins = []
+        
         # Load binary in angr and initialize the state. Load binary with offset defined by detected SDK
-        if(pandora_ctx.cftrace_path is None):
-            my_explorer = BasicBlockExplorer(binary_path, action_mgr.actions['explorer'],
+        my_explorer = BasicBlockExplorer(scase_plugin_mgr, binary_path, action_mgr.actions['explorer'],
                                                   sdk_mgr.get_load_addr(), angr_backend=sdk_mgr.get_angr_backend(), angr_arch=sdk_mgr.get_angr_arch())
-        else:
-            my_explorer = BasicBlockScaseExplorer(pandora_ctx.cftrace_path, binary_path, action_mgr.actions['explorer'],
-                                                  sdk_mgr.get_load_addr(), angr_backend=sdk_mgr.get_angr_backend(), angr_arch=sdk_mgr.get_angr_arch())
+
         init_state = my_explorer.get_init_state()
 
         # Initialize sdk with specific initial state
         sdk_mgr.initialize_sdk(init_state)
 
         console_progress.update(task_sdks, total=1.0, completed=1.0)
+
+        if pandora_ctx.script_files:
+            sm = ScriptManager(pandora_ctx.script_files, my_explorer.proj.arch, init_state)
 
         """
         Angr setup
@@ -200,7 +211,7 @@ def pandora_explore(pandora_ctx: PandoraContext):
 
     # Get all Singleton manager objects for the local context:
     action_mgr = ActionManager()
-    my_explorer = explorer.BasicBlockExplorer() if pandora_ctx.cftrace_path is None else explorer.BasicBlockScaseExplorer()
+    my_explorer = explorer.BasicBlockExplorer()
     sdk_mgr = SDKManager()
 
     action_mgr.actions['start'](info='System loaded. Start hook before symbolic execution starts.',
@@ -475,6 +486,16 @@ def plugin_callback(ctx: typer.Context, value: str):
     return plugins
 
 
+def scase_plugin_callback(ctx: typer.Context, value: str):
+    if ctx.resilient_parsing:
+        return
+
+    plugins = value.split(',')
+    for p in plugins:
+        validate_opt(p, ScasePluginManager.get_plugin_names() + ['all', 'default'])
+    return plugins
+
+
 def sdk_callback(ctx: typer.Context, value: str):
     if ctx.resilient_parsing:
         return
@@ -557,6 +578,11 @@ def main_callback(
             help="Path to optional config file",
             exists=True, dir_okay=False, readable=True, resolve_path=True,
         ),
+        script_files: List[Path] = typer.Option(
+            None, "-S", "--script-file",
+            help="Path to optional script files",
+            exists=True, dir_okay=False, readable=True, resolve_path=True,
+        ),
         log_level: LogLevel = typer.Option(
             "warning", "-l", "--log-level",
             help="The log level for pandora",
@@ -575,9 +601,15 @@ def main_callback(
             help="Number of steps to execute in symbolic execution. 0 or negative allows to run to completion.",
             rich_help_panel="Exploration options"
         ),
-        cftrace_path: Path = typer.Option(
-            None, "-t", "--cftrace-file",
-            help="Path to optional control flow trace",
+        cftrace_paths: List[Path] = typer.Option(
+            [], "-t", "--cftrace-files",
+            help="Paths to optional control flow trace",
+            exists=True, dir_okay=False, readable=True, resolve_path=True,
+            rich_help_panel="Exploration options"
+        ),
+        dftrace_paths: List[Path] = typer.Option(
+            [], "-T", "--dftrace-files",
+            help="Path to optional data flow trace",
             exists=True, dir_okay=False, readable=True, resolve_path=True,
             rich_help_panel="Exploration options"
         ),
@@ -589,8 +621,16 @@ def main_callback(
                  + format_help_options('plugin', PluginManager.get_plugin_help()),
             rich_help_panel="Exploration options"
         ),
+        scase_plugins: str = typer.Option(
+            "default", "-P", "--scase-plugins", callback=scase_plugin_callback,
+            metavar='[' + '|'.join(ScasePluginManager.get_special_plugins().keys()) + '|' + '|'.join(
+                ScasePluginManager.get_plugin_names()) + ']',
+            help="Define the scase plugins to activate, separated by a comma. "
+                 + format_help_options('scase plugin', ScasePluginManager.get_plugin_help()),
+            rich_help_panel="Exploration options"
+        ),
         pandora_options: Optional[List[str]] = typer.Option(
-            None, "--pandora-option", callback=plugin_options_callback,
+            [], "--pandora-option", callback=plugin_options_callback,
             help="Sets a specific advanced option via the format [bold]option=value[/]. Default values shown below. "
                  + format_help_options('option', po.PandoraOptions().get_options_dict() ),
             rich_help_panel="Exploration options"
@@ -615,7 +655,7 @@ def main_callback(
             exists=True, dir_okay=False, readable=True, resolve_path=True,
         ),
         actions: Optional[List[str]] = typer.Option(
-            None, "-a", "--action", callback=action_callback,
+            [], "-a", "--action", callback=action_callback,
             help="Adds an action bound to a specific event via the format [bold]event=action[/]. "
                  + format_help_options('event',
                                        {**ActionManager.get_system_events(),
